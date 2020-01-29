@@ -1,0 +1,339 @@
+Index: Source/RunActivity/Common/Events.cs
+===================================================================
+--- Source/RunActivity/Common/Events.cs	(revision 3280)
++++ Source/RunActivity/Common/Events.cs	(working copy)
+@@ -131,9 +131,15 @@
+         _HeadlightDim,
+         _HeadlightOff,
+         _HeadlightOn,
+-        _ResetWheelSlip
++        _ResetWheelSlip,
+ 
+-
++        TrainBrakePressureStoppedChanging,
++        EngineBrakePressureStoppedChanging,
++        BrakePipePressureIncrease,
++        BrakePipePressureDecrease,
++        BrakePipePressureStoppedChanging,
++        CylinderCocksOpen,
++        CylinderCocksClose
+     }
+ 
+     public static class Events
+@@ -275,6 +281,15 @@
+                         case 134: return Event.SteamPulse14;
+                         case 135: return Event.SteamPulse15;
+                         case 136: return Event.SteamPulse16;
++
++                        case 137: return Event.CylinderCocksOpen;
++                        case 138: return Event.CylinderCocksClose;
++                        case 139: return Event.TrainBrakePressureStoppedChanging;
++                        case 140: return Event.EngineBrakePressureStoppedChanging;
++                        case 141: return Event.BrakePipePressureIncrease;
++                        case 142: return Event.BrakePipePressureDecrease;
++                        case 143: return Event.BrakePipePressureStoppedChanging;
++
+                         //
+ 
+                         default: return 0;
+Index: Source/RunActivity/RollingStock/MSTSDieselLocomotive.cs
+===================================================================
+--- Source/RunActivity/RollingStock/MSTSDieselLocomotive.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/MSTSDieselLocomotive.cs	(working copy)
+@@ -679,12 +679,7 @@
+             EngineRPM = Variable2 * (MaxRPM - IdleRPM) + IdleRPM;
+ 
+             if (DynamicBrakePercent > 0)
+-            {
+-                if (MaxDynamicBrakeForceN == 0)
+-                    Variable3 = DynamicBrakePercent / 100f;
+-                else
+-                    Variable3 = Math.Abs(MotiveForceN) / MaxDynamicBrakeForceN;
+-            }
++                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : DynamicBrakeForceN / MaxDynamicBrakeForceN;
+             else
+                 Variable3 = 0;
+ 
+Index: Source/RunActivity/RollingStock/MSTSElectricLocomotive.cs
+===================================================================
+--- Source/RunActivity/RollingStock/MSTSElectricLocomotive.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/MSTSElectricLocomotive.cs	(working copy)
+@@ -162,7 +162,7 @@
+             //Variable2 = Math.Abs(MotiveForceN) / MaxForceN * 100F ;
+ 
+             Variable1 = ThrottlePercent;
+-            if ( ThrottlePercent == 0f ) Variable2 = 0;
++            /*if ( ThrottlePercent == 0f ) Variable2 = 0;
+             else 
+             {
+                 float dV2;
+@@ -171,9 +171,10 @@
+                 if (dV2 > max) dV2 = max;
+                 else if (dV2 < -max) dV2 = -max;
+                 Variable2 += dV2;
+-            }
++            }*/
++            Variable2 = TractiveForceN / MaxForceN * 100f;
+             if ( DynamicBrakePercent > 0)
+-                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : Math.Abs(MotiveForceN) / MaxDynamicBrakeForceN;
++                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : DynamicBrakeForceN / MaxDynamicBrakeForceN;
+             else
+                 Variable3 = 0;
+         }
+Index: Source/RunActivity/RollingStock/MSTSLocomotive.cs
+===================================================================
+--- Source/RunActivity/RollingStock/MSTSLocomotive.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/MSTSLocomotive.cs	(working copy)
+@@ -95,8 +95,10 @@
+         public bool Wiper;
+         public bool BailOff;
+         public bool DynamicBrake;
++        public float DynamicBrakeForceN = 0f; // Raw dynamic brake force for diesel and electric sound variable3
+         public float MaxPowerW;
+         public float MaxForceN;
++        public float TractiveForceN=0f; // Raw tractive force for electric sound variable2
+         public float MaxCurrentA = 0;
+         public float MaxSpeedMpS = 1e3f;
+         public float MainResPressurePSI = 130;
+@@ -952,6 +954,7 @@
+      //           if (DynamicBrakeController.CommandStartTime + DynamicBrakeDelayS < Simulator.ClockTime)
+      //           {
+                     DynamicBrake = false; // Disengage
++                    DynamicBrakeForceN = 0f; // Reset dynamic brake force
+                     if (IsLeadLocomotive())
+                         Simulator.Confirmer.Confirm(CabControl.DynamicBrake, CabSetting.Off);
+      //           }
+@@ -1045,7 +1048,14 @@
+             {
+                 float f = DynamicBrakeForceCurves.Get(.01f * DynamicBrakePercent, currentSpeedMpS);
+                 if (f > 0)
++                {
+                     MotiveForceN -= (SpeedMpS > 0 ? 1 : -1) * f;
++                    DynamicBrakeForceN = f;
++                }
++                else
++                {
++                    DynamicBrakeForceN = 0f;
++                }
+             }
+ 
+ 
+@@ -1133,9 +1143,11 @@
+                     if (MotiveForceN < 0)
+                         MotiveForceN = 0;
+                 }
++                TractiveForceN = MotiveForceN;
+             }
++            else 
++                TractiveForceN = 0f;
+ 
+-
+             if (MaxForceN > 0 && MaxContinuousForceN > 0)
+             {
+                 MotiveForceN *= 1 - (MaxForceN - MaxContinuousForceN) / (MaxForceN * MaxContinuousForceN) * AverageForceN;
+Index: Source/RunActivity/RollingStock/MSTSSteamLocomotive.cs
+===================================================================
+--- Source/RunActivity/RollingStock/MSTSSteamLocomotive.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/MSTSSteamLocomotive.cs	(working copy)
+@@ -4881,6 +4881,11 @@
+         {
+             CylinderCocksAreOpen = !CylinderCocksAreOpen;
+             SignalEvent(Event.CylinderCocksToggle);
++            if (CylinderCocksAreOpen)
++                SignalEvent(Event.CylinderCocksOpen);
++            else
++                SignalEvent(Event.CylinderCocksClose);
++
+             if (IsPlayerTrain)
+                 Simulator.Confirmer.Confirm(CabControl.CylinderCocks, CylinderCocksAreOpen ? CabSetting.On : CabSetting.Off);
+         }
+Index: Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/AirSinglePipe.cs
+===================================================================
+--- Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/AirSinglePipe.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/AirSinglePipe.cs	(working copy)
+@@ -50,6 +50,12 @@
+         protected string RetainerDebugState = string.Empty;
+         protected bool NoMRPAuxResCharging;
+ 
++        protected bool TrainBrakePressureChanging = false;
++        protected bool BrakePipePressureChanging = false;
++        protected int SoundTriggerCounter = 0;
++        protected float prevCylPressurePSI = 0f;
++        protected float prevBrakePipePressurePSI = 0f;
++
+         /// <summary>
+         /// EP brake holding valve. Needs to be closed (Lap) in case of brake application or holding.
+         /// For non-EP brake types must default to and remain in Release.
+@@ -274,7 +280,7 @@
+ 
+         public override void Update(float elapsedClockSeconds)
+         {
+-            ValveState prevTripleValueState = TripleValveState;
++            //ValveState prevTripleValueState = TripleValveState;
+ 
+             // Emergency reservoir's second role (in OpenRails) is to act as a control reservoir,
+             // maintaining a reference control pressure for graduated release brake actions.
+@@ -382,7 +388,7 @@
+                 AuxResPressurePSI += dp;
+                 BrakeLine2PressurePSI -= dp * AuxBrakeLineVolumeRatio;
+             }
+-            if (TripleValveState != prevTripleValueState)
++            /*if (TripleValveState != prevTripleValueState)
+             {
+                 switch (TripleValveState)
+                 {
+@@ -389,8 +395,11 @@
+                     case ValveState.Release: Car.SignalEvent(Event.TrainBrakePressureDecrease); break;
+                     case ValveState.Apply:
+                     case ValveState.Emergency: Car.SignalEvent(Event.TrainBrakePressureIncrease); break;
++                    case ValveState.Lap: Car.SignalEvent(Event.TrainBrakeCylinderPressureStoppedChanging); break;
++             * this method isn't enough, as can't detect when the trainbrake pressure stops changing after release, only after apply
+                 }
+-            }
++            }*/
++
+             if (BrakeLine3PressurePSI >= 1000)
+             {
+                 BrakeLine3PressurePSI -= 1000;
+@@ -406,6 +415,50 @@
+             if (f < MaxHandbrakeForceN * HandbrakePercent / 100)
+                 f = MaxHandbrakeForceN * HandbrakePercent / 100;
+             Car.BrakeForceN = f;
++
++            // sound trigger checking runs every 4th update, to avoid the problems caused by the jumping BrakeLine1PressurePSI value, and also saves cpu time :)
++            if (SoundTriggerCounter >= 4)
++            {
++                SoundTriggerCounter = 0;
++                if (AutoCylPressurePSI != prevCylPressurePSI)
++                {
++                    if (!TrainBrakePressureChanging)
++                    {
++                        if (AutoCylPressurePSI > prevCylPressurePSI)
++                            Car.SignalEvent(Event.TrainBrakePressureIncrease);
++                        else
++                            Car.SignalEvent(Event.TrainBrakePressureDecrease);
++                        TrainBrakePressureChanging = !TrainBrakePressureChanging;
++                    }
++
++                }
++                else if (TrainBrakePressureChanging)
++                {
++                    TrainBrakePressureChanging = !TrainBrakePressureChanging;
++                    Car.SignalEvent(Event.TrainBrakePressureStoppedChanging);
++                }
++
++                if ( Math.Abs(BrakeLine1PressurePSI-prevBrakePipePressurePSI)> 0.05f /*BrakeLine1PressurePSI > prevBrakePipePressurePSI*/)
++                {
++                    if (!BrakePipePressureChanging)
++                    {
++                        if (BrakeLine1PressurePSI > prevBrakePipePressurePSI)
++                            Car.SignalEvent(Event.BrakePipePressureIncrease);
++                        else
++                            Car.SignalEvent(Event.BrakePipePressureDecrease);
++                        BrakePipePressureChanging = !BrakePipePressureChanging;
++                    }
++
++                }
++                else if (BrakePipePressureChanging)
++                {
++                    BrakePipePressureChanging = !BrakePipePressureChanging;
++                    Car.SignalEvent(Event.BrakePipePressureStoppedChanging);
++                }
++                prevCylPressurePSI = AutoCylPressurePSI;
++                prevBrakePipePressurePSI = BrakeLine1PressurePSI;
++            }
++            SoundTriggerCounter++;
+         }
+ 
+         public override void PropagateBrakePressure(float elapsedClockSeconds)
+@@ -563,6 +616,7 @@
+                             {
+                                 case ValveState.Release: lead.SignalEvent(Event.EngineBrakePressureIncrease); break;
+                                 case ValveState.Apply: lead.SignalEvent(Event.EngineBrakePressureDecrease); break;
++                                case ValveState.Lap: lead.SignalEvent(Event.EngineBrakePressureStoppedChanging); break;
+                             }
+                         if (lead.BailOff || (lead.DynamicBrakeAutoBailOff && train.MUDynamicBrakePercent > 0))
+                             p += 1000;
+Index: Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/EPBrakeSystem.cs
+===================================================================
+--- Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/EPBrakeSystem.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/EPBrakeSystem.cs	(working copy)
+@@ -47,7 +47,7 @@
+                 BrakeLine2PressurePSI -= dp * AuxBrakeLineVolumeRatio / AuxCylVolumeRatio;
+                 AutoCylPressurePSI += dp;
+ 
+-                Car.SignalEvent(Event.TrainBrakePressureIncrease);
++                //Car.SignalEvent(Event.TrainBrakePressureIncrease);
+             }
+         }
+ 
+Index: Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs
+===================================================================
+--- Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs	(revision 3280)
++++ Source/RunActivity/RollingStock/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs	(working copy)
+@@ -50,7 +50,13 @@
+         float PipeTimeFactorS = .003f; // copied from air single pipe, probably not accurate
+         float ReleaseTimeFactorS = 1.009f; // copied from air single pipe, but close to modern ejector data
+         float ApplyChargingRatePSIpS = 4;
++        bool TrainBrakePressureChanging = false;
++        bool BrakePipePressureChanging = false;
++        int SoundTriggerCounter = 0;
++        float prevCylPressurePSIA = 0f;
++        float prevBrakePipePressurePSI = 0f;
+ 
++
+         public VacuumSinglePipe(TrainCar car)
+         {
+             Car = car;
+@@ -245,6 +251,51 @@
+             if (f < MaxHandbrakeForceN * HandbrakePercent / 100)
+                 f = MaxHandbrakeForceN * HandbrakePercent / 100;
+             Car.BrakeForceN = f;
++
++
++            // sound trigger checking runs every 4th update, to avoid the problems caused by the jumping BrakeLine1PressurePSI value, and also saves cpu time :)
++            if (SoundTriggerCounter >= 4)
++            {
++                SoundTriggerCounter = 0;
++                if (CylPressurePSIA != prevCylPressurePSIA)
++                {
++                    if (!TrainBrakePressureChanging)
++                    {
++                        if (CylPressurePSIA > prevCylPressurePSIA)
++                            Car.SignalEvent(Event.TrainBrakePressureIncrease);
++                        else
++                            Car.SignalEvent(Event.TrainBrakePressureDecrease);
++                        TrainBrakePressureChanging = !TrainBrakePressureChanging;
++                    }
++
++                }
++                else if (TrainBrakePressureChanging)
++                {
++                    TrainBrakePressureChanging = !TrainBrakePressureChanging;
++                    Car.SignalEvent(Event.TrainBrakePressureStoppedChanging);
++                }
++
++                if ( Math.Abs(BrakeLine1PressurePSI-prevBrakePipePressurePSI)> 0.05f /*BrakeLine1PressurePSI > prevBrakePipePressurePSI*/)
++                {
++                    if (!BrakePipePressureChanging)
++                    {
++                        if (BrakeLine1PressurePSI > prevBrakePipePressurePSI)
++                            Car.SignalEvent(Event.BrakePipePressureIncrease);
++                        else
++                            Car.SignalEvent(Event.BrakePipePressureDecrease);
++                        BrakePipePressureChanging = !BrakePipePressureChanging;
++                    }
++
++                }
++                else if (BrakePipePressureChanging)
++                {
++                    BrakePipePressureChanging = !BrakePipePressureChanging;
++                    Car.SignalEvent(Event.BrakePipePressureStoppedChanging);
++                }
++                prevCylPressurePSIA = CylPressurePSIA;
++                prevBrakePipePressurePSI = BrakeLine1PressurePSI;
++            }
++            SoundTriggerCounter++;
+         }
+ 
+         public override void PropagateBrakePressure(float elapsedClockSeconds)

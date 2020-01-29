@@ -1,0 +1,95 @@
+Index: RunActivity/RollingStock/MSTSDieselLocomotive.cs
+===================================================================
+--- RunActivity/RollingStock/MSTSDieselLocomotive.cs	(revision 3265)
++++ RunActivity/RollingStock/MSTSDieselLocomotive.cs	(working copy)
+@@ -679,12 +679,7 @@
+             EngineRPM = Variable2 * (MaxRPM - IdleRPM) + IdleRPM;
+ 
+             if (DynamicBrakePercent > 0)
+-            {
+-                if (MaxDynamicBrakeForceN == 0)
+-                    Variable3 = DynamicBrakePercent / 100f;
+-                else
+-                    Variable3 = Math.Abs(MotiveForceN) / MaxDynamicBrakeForceN;
+-            }
++                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : DynamicBrakeForceN / MaxDynamicBrakeForceN;
+             else
+                 Variable3 = 0;
+ 
+Index: RunActivity/RollingStock/MSTSElectricLocomotive.cs
+===================================================================
+--- RunActivity/RollingStock/MSTSElectricLocomotive.cs	(revision 3265)
++++ RunActivity/RollingStock/MSTSElectricLocomotive.cs	(working copy)
+@@ -162,7 +162,7 @@
+             //Variable2 = Math.Abs(MotiveForceN) / MaxForceN * 100F ;
+ 
+             Variable1 = ThrottlePercent;
+-            if ( ThrottlePercent == 0f ) Variable2 = 0;
++            /*if ( ThrottlePercent == 0f ) Variable2 = 0;
+             else 
+             {
+                 float dV2;
+@@ -171,9 +171,10 @@
+                 if (dV2 > max) dV2 = max;
+                 else if (dV2 < -max) dV2 = -max;
+                 Variable2 += dV2;
+-            }
++            }*/
++            Variable2 = TractiveForceN / MaxForceN * 100f;
+             if ( DynamicBrakePercent > 0)
+-                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : Math.Abs(MotiveForceN) / MaxDynamicBrakeForceN;
++                Variable3 = MaxDynamicBrakeForceN == 0 ? DynamicBrakePercent / 100f : DynamicBrakeForceN / MaxDynamicBrakeForceN;
+             else
+                 Variable3 = 0;
+         }
+Index: RunActivity/RollingStock/MSTSLocomotive.cs
+===================================================================
+--- RunActivity/RollingStock/MSTSLocomotive.cs	(revision 3265)
++++ RunActivity/RollingStock/MSTSLocomotive.cs	(working copy)
+@@ -95,8 +95,10 @@
+         public bool Wiper;
+         public bool BailOff;
+         public bool DynamicBrake;
++        public float DynamicBrakeForceN = 0f; // Raw dynamic brake force for diesel and electric sound variable3
+         public float MaxPowerW;
+         public float MaxForceN;
++        public float TractiveForceN=0f; // Raw tractive force for electric sound variable2
+         public float MaxCurrentA = 0;
+         public float MaxSpeedMpS = 1e3f;
+         public float MainResPressurePSI = 130;
+@@ -952,6 +954,7 @@
+      //           if (DynamicBrakeController.CommandStartTime + DynamicBrakeDelayS < Simulator.ClockTime)
+      //           {
+                     DynamicBrake = false; // Disengage
++                    DynamicBrakeForceN = 0f; // Reset dynamic brake force
+                     if (IsLeadLocomotive())
+                         Simulator.Confirmer.Confirm(CabControl.DynamicBrake, CabSetting.Off);
+      //           }
+@@ -1045,7 +1048,14 @@
+             {
+                 float f = DynamicBrakeForceCurves.Get(.01f * DynamicBrakePercent, currentSpeedMpS);
+                 if (f > 0)
++                {
+                     MotiveForceN -= (SpeedMpS > 0 ? 1 : -1) * f;
++                    DynamicBrakeForceN = f;
++                }
++                else
++                {
++                    DynamicBrakeForceN = 0f;
++                }
+             }
+ 
+ 
+@@ -1133,9 +1143,11 @@
+                     if (MotiveForceN < 0)
+                         MotiveForceN = 0;
+                 }
++                TractiveForceN = MotiveForceN;
+             }
++            else 
++                TractiveForceN = 0f;
+ 
+-
+             if (MaxForceN > 0 && MaxContinuousForceN > 0)
+             {
+                 MotiveForceN *= 1 - (MaxForceN - MaxContinuousForceN) / (MaxForceN * MaxContinuousForceN) * AverageForceN;

@@ -1,0 +1,104 @@
+Index: Source/Orts.Simulation/Simulation/RollingStocks/SubSystems/PowerSupplies/CircuitBreaker.cs
+===================================================================
+--- Source/Orts.Simulation/Simulation/RollingStocks/SubSystems/PowerSupplies/CircuitBreaker.cs	(revision 3594)
++++ Source/Orts.Simulation/Simulation/RollingStocks/SubSystems/PowerSupplies/CircuitBreaker.cs	(working copy)
+@@ -87,7 +87,8 @@
+                 }
+                 if (Script == null)
+                 {
+-                    Script = new AutomaticCircuitBreaker() as CircuitBreaker;
++                    //Script = new AutomaticCircuitBreaker() as CircuitBreaker;
++                    Script = new ManualCircuitBreaker() as CircuitBreaker;
+                 }
+ 
+                 Script.ClockTime = () => (float)Simulator.ClockTime;
+@@ -186,4 +187,37 @@
+             // Nothing to do since it is automatic
+         }
+     }
++    class ManualCircuitBreaker : CircuitBreaker
++    {
++        private Timer ClosingTimer;
++
++        public override void Initialize()
++        {
++            ClosingTimer = new Timer(this);
++            ClosingTimer.Setup(ClosingDelayS());
++
++            SetDriverCloseAuthorization(true);
++        }
++
++        public override void Update(float elapsedSeconds)
++        {
++                if (TCSCloseAuthorization() && ClosingTimer.Started && ClosingTimer.Triggered) {
++                    ClosingTimer.Stop();
++                    SetCurrentState(CircuitBreakerState.Closed);
++                }
++        }
++
++        public override void HandleEvent(PowerSupplyEvent evt)
++        {
++                switch (evt)
++                {
++                    case PowerSupplyEvent.OpenCircuitBreaker:
++                        SetCurrentState(CircuitBreakerState.Open);
++                        break;
++                    case PowerSupplyEvent.CloseCircuitBreaker:
++                        if (!ClosingTimer.Started) ClosingTimer.Start();
++                        break;
++                }
++        }
++    }
+ }
+Index: Source/RunActivity/Viewer3D/RollingStock/MSTSElectricLocomotiveViewer.cs
+===================================================================
+--- Source/RunActivity/Viewer3D/RollingStock/MSTSElectricLocomotiveViewer.cs	(revision 3594)
++++ Source/RunActivity/Viewer3D/RollingStock/MSTSElectricLocomotiveViewer.cs	(working copy)
+@@ -18,7 +18,11 @@
+ // This file is the responsibility of the 3D & Environment Team. 
+ 
+ using Orts.Simulation.RollingStocks;
++using Orts.Simulation.RollingStocks.SubSystems.PowerSupplies;
+ using ORTS.Common;
++using ORTS.Scripting.Api;
++using ORTS.Settings;
++using System;
+ 
+ namespace Orts.Viewer3D.RollingStock
+ {
+@@ -41,7 +45,35 @@
+         {
+             base.HandleUserInput(elapsedTime);
+         }
++        public override void InitializeUserInputCommands()
++        {
++            UserInputCommands.Add(UserCommands.ControlDieselPlayer, new Action[] { Noop, () => OpenClosePlayerCircuitBreaker() });
++            UserInputCommands.Add(UserCommands.ControlDieselHelper, new Action[] { Noop, () => OpenCloseHelperCircuitBreaker() });
++            base.InitializeUserInputCommands();
++        }
+ 
++        private void OpenClosePlayerCircuitBreaker()
++        {
++            if (ElectricLocomotive.PowerSupply.CircuitBreaker.State==CircuitBreakerState.Open)
++                ElectricLocomotive.SignalEvent(PowerSupplyEvent.CloseCircuitBreaker);
++            else if (ElectricLocomotive.PowerSupply.CircuitBreaker.State==CircuitBreakerState.Closed)
++                ElectricLocomotive.SignalEvent(PowerSupplyEvent.OpenCircuitBreaker);
++        }
++
++        private void OpenCloseHelperCircuitBreaker()
++        {
++            foreach (var car in ElectricLocomotive.Train.Cars)
++            {
++                var mstsElectricLocomotive = car as MSTSElectricLocomotive;
++                if (mstsElectricLocomotive != Program.Simulator.PlayerLocomotive && mstsElectricLocomotive != null && mstsElectricLocomotive.AcceptMUSignals)
++                {
++                    if (mstsElectricLocomotive.PowerSupply.CircuitBreaker.State == CircuitBreakerState.Open)
++                        mstsElectricLocomotive.SignalEvent(PowerSupplyEvent.CloseCircuitBreaker);
++                    else if (mstsElectricLocomotive.PowerSupply.CircuitBreaker.State == CircuitBreakerState.Closed)
++                        mstsElectricLocomotive.SignalEvent(PowerSupplyEvent.OpenCircuitBreaker);
++                }
++            }
++        }
+         /// <summary>
+         /// We are about to display a video frame.  Calculate positions for 
+         /// animated objects, and add their primitives to the RenderFrame list.

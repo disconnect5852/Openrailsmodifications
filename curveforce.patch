@@ -1,0 +1,142 @@
+Index: Source/RunActivity/Viewer3D/Sound.cs
+===================================================================
+--- Source/RunActivity/Viewer3D/Sound.cs	(revision 3313)
++++ Source/RunActivity/Viewer3D/Sound.cs	(revision 3314)
+@@ -1170,6 +1170,7 @@
+                 case Orts.Formats.Msts.VolumeCurve.Controls.Variable2Controlled: return car.Variable2;
+                 case Orts.Formats.Msts.VolumeCurve.Controls.Variable3Controlled: return car.Variable3;
+                 case Orts.Formats.Msts.VolumeCurve.Controls.BrakeCylControlled: return car.BrakeSystem.GetCylPressurePSI();
++                case Orts.Formats.Msts.VolumeCurve.Controls.CurveForceControlled: return car.CurveForceNFiltered;
+                 default: return 0;
+             }
+         }
+@@ -1585,6 +1586,7 @@
+                 case Orts.Formats.Msts.Variable_Trigger.Events.Variable2_Dec_Past:
+                 case Orts.Formats.Msts.Variable_Trigger.Events.Variable3_Dec_Past:
+                 case Orts.Formats.Msts.Variable_Trigger.Events.BrakeCyl_Dec_Past:
++                case Orts.Formats.Msts.Variable_Trigger.Events.CurveForce_Dec_Past:
+                     if (newValue < SMS.Threshold)
+                     {
+                         Signaled = true;
+@@ -1598,6 +1600,7 @@
+                 case Orts.Formats.Msts.Variable_Trigger.Events.Variable2_Inc_Past:
+                 case Orts.Formats.Msts.Variable_Trigger.Events.Variable3_Inc_Past:
+                 case Orts.Formats.Msts.Variable_Trigger.Events.BrakeCyl_Inc_Past:
++                case Orts.Formats.Msts.Variable_Trigger.Events.CurveForce_Inc_Past:
+                     if (newValue > SMS.Threshold)
+                     {
+                         Signaled = true;
+@@ -1669,6 +1672,9 @@
+                 case Orts.Formats.Msts.Variable_Trigger.Events.BrakeCyl_Dec_Past:
+                 case Orts.Formats.Msts.Variable_Trigger.Events.BrakeCyl_Inc_Past:
+                     return car.BrakeSystem.GetCylPressurePSI();
++                case Orts.Formats.Msts.Variable_Trigger.Events.CurveForce_Dec_Past:
++                case Orts.Formats.Msts.Variable_Trigger.Events.CurveForce_Inc_Past:
++                    return car.CurveForceNFiltered;
+                 default:
+                     return 0;
+             }
+Index: Source/RunActivity/RollingStock/TrainCar.cs
+===================================================================
+--- Source/RunActivity/RollingStock/TrainCar.cs	(revision 3313)
++++ Source/RunActivity/RollingStock/TrainCar.cs	(revision 3314)
+@@ -235,6 +235,13 @@
+         public float PrevMotiveForceN;
+         public float GravityForceN;  // Newtons  - signed relative to direction of car - 
+         public float CurveForceN;   // Resistive force due to curve, in Newtons
++        //private float _prevCurveForceN=0f;
++
++        // filter curve force for audio to prevent rapid changes.
++        //private IIRFilter CurveForceFilter = new IIRFilter(IIRFilter.FilterTypes.Butterworth, 1, 1.0f, 0.9f);
++        private SmoothedData CurveForceFilter = new SmoothedData(0.75f);
++        public float CurveForceNFiltered;
++
+         public float TunnelForceN;  // Resistive force due to tunnel, in Newtons
+         public float FrictionForceN; // in Newtons ( kg.m/s^2 ) unsigned, includes effects of curvature
+         public float BrakeForceN;    // brake force in Newtons
+@@ -309,7 +316,8 @@
+             CurveResistanceSpeedDependent = Simulator.Settings.CurveResistanceSpeedDependent;
+             CurveSpeedDependent = Simulator.Settings.CurveSpeedDependent;
+             TunnelResistanceDependent = Simulator.Settings.TunnelResistanceDependent;
+-            
++
++            //CurveForceFilter.Initialize();
+             // Initialize tunnel resistance values
+ 
+             DoubleTunnelCrossSectAreaM2 = (float)Simulator.TRK.Tr_RouteFile.DoubleTunnelAreaM2;
+@@ -415,7 +423,7 @@
+ 
+             WagonType = GetWagonType();     // Determine type of wagon for use in following
+             UpdateCurveSpeedLimit(); // call this first as it will provide inputs for the curve force.
+-            UpdateCurveForce();
++            UpdateCurveForce(elapsedClockSeconds);
+             UpdateTunnelForce();
+             UpdateCarriageHeatLoss();
+             
+@@ -782,7 +790,7 @@
+         /// base.UpdateCurveForce();
+         /// CurveForceN *= someCarSpecificCoef;     
+         /// </summary>
+-        public virtual void UpdateCurveForce()
++        public virtual void UpdateCurveForce(float elapsedClockSeconds)
+         {
+             if (CurveResistanceSpeedDependent)
+             {
+@@ -898,13 +906,14 @@
+                     float CurveResistanceSpeedFactor = Math.Abs((MaxCurveEqualLoadSpeedMps - AbsSpeedMpS) / MaxCurveEqualLoadSpeedMps) * StartCurveResistanceFactor;
+                     CurveForceN *= CurveResistanceSpeedFactor * CurveResistanceZeroSpeedFactor;
+                     CurveForceN *= GravitationalAccelerationMpS2; // to convert to Newtons
+-              
+                 }
+                 else
+                 {
+                     CurveForceN = 0f;
+                 }
+-
++                //CurveForceNFiltered = CurveForceFilter.Filter(CurveForceN, elapsedClockSeconds);
++                CurveForceFilter.Update(elapsedClockSeconds, CurveForceN);
++                CurveForceNFiltered = CurveForceFilter.SmoothedValue;
+             }
+         }
+ 
+Index: Source/Orts.Formats.Msts/SoundManagmentFile.cs
+===================================================================
+--- Source/Orts.Formats.Msts/SoundManagmentFile.cs	(revision 3313)
++++ Source/Orts.Formats.Msts/SoundManagmentFile.cs	(revision 3314)
+@@ -193,7 +193,7 @@
+ 
+     public class VolumeCurve
+     {
+-        public enum Controls { None, DistanceControlled, SpeedControlled, Variable1Controlled, Variable2Controlled, Variable3Controlled, BrakeCylControlled };
++        public enum Controls { None, DistanceControlled, SpeedControlled, Variable1Controlled, Variable2Controlled, Variable3Controlled, BrakeCylControlled, CurveForceControlled };
+ 
+         public Controls Control = Controls.None;
+         public float Granularity = 1.0f;
+@@ -212,7 +212,8 @@
+                 case "variable2controlled": Control = Controls.Variable2Controlled; break;
+                 case "variable3controlled": Control = Controls.Variable3Controlled; break;
+                 case "brakecylcontrolled": Control = Controls.BrakeCylControlled; break;
+-                default: STFException.TraceInformation(stf, "Skipped unknown VolumeCurve type " + type); stf.SkipRestOfBlock(); return;
++                case "curveforcecontrolled": Control = Controls.CurveForceControlled; break;
++                default: STFException.TraceWarning(stf, "Crash expected: Skipped unknown VolumeCurve/Frequencycurve type " + type); stf.SkipRestOfBlock(); return;
+             }
+             stf.ParseBlock(new STFReader.TokenProcessor[] {
+                 new STFReader.TokenProcessor("granularity", ()=>{ Granularity = stf.ReadFloatBlock(STFReader.UNITS.None, null); }),
+@@ -333,7 +334,7 @@
+     public class Variable_Trigger : Trigger
+     {
+         public enum Events { Speed_Inc_Past, Speed_Dec_Past, Distance_Inc_Past, Distance_Dec_Past,
+-        Variable1_Inc_Past, Variable1_Dec_Past, Variable2_Inc_Past, Variable2_Dec_Past, Variable3_Inc_Past, Variable3_Dec_Past, BrakeCyl_Inc_Past, BrakeCyl_Dec_Past
++        Variable1_Inc_Past, Variable1_Dec_Past, Variable2_Inc_Past, Variable2_Dec_Past, Variable3_Inc_Past, Variable3_Dec_Past, BrakeCyl_Inc_Past, BrakeCyl_Dec_Past, CurveForce_Inc_Past, CurveForce_Dec_Past
+         };
+ 
+         public Events Event;
+@@ -371,6 +372,8 @@
+                 case "variable3_dec_past": Event = Events.Variable3_Dec_Past; break;
+                 case "brakecyl_inc_past": Event = Events.BrakeCyl_Inc_Past; break;
+                 case "brakecyl_dec_past": Event = Events.BrakeCyl_Dec_Past; break;
++                case "curveforce_inc_past": Event = Events.CurveForce_Inc_Past; break;
++                case "curveforce_dec_past": Event = Events.CurveForce_Dec_Past; break;
+             }
+ 
+            

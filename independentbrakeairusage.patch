@@ -1,0 +1,166 @@
+Index: Source/RunActivity/Simulation/RollingStocks/MSTSDieselLocomotive.cs
+===================================================================
+--- Source/RunActivity/Simulation/RollingStocks/MSTSDieselLocomotive.cs	(revision 3360)
++++ Source/RunActivity/Simulation/RollingStocks/MSTSDieselLocomotive.cs	(revision 3361)
+@@ -405,7 +405,7 @@
+ 			
+ 			// TODO  this is a wild simplification for diesel electric
+             //float e = (EngineRPM - IdleRPM) / (MaxRPM - IdleRPM); //
+-            float t = ThrottlePercent / 100f;
++            float throttleNum = ThrottlePercent / 100f;
+ 
+             if (!this.Simulator.UseAdvancedAdhesion)
+                 AbsWheelSpeedMpS = AbsSpeedMpS;
+@@ -473,7 +473,7 @@
+             {
+                 if (TractiveForceCurves == null)
+                 {
+-                    float maxForceN = Math.Min(t * MaxForceN, AbsWheelSpeedMpS == 0.0f ? ( t * MaxForceN ) : ( t * DieselEngines.MaxOutputPowerW / AbsWheelSpeedMpS));
++                    float maxForceN = Math.Min(throttleNum * MaxForceN, AbsWheelSpeedMpS == 0.0f ? ( throttleNum * MaxForceN ) : ( throttleNum * DieselEngines.MaxOutputPowerW / AbsWheelSpeedMpS));
+                     //float maxForceN = MaxForceN * t;
+                     float maxPowerW = 0.98f * DieselEngines.MaxOutputPowerW;      //0.98 added to let the diesel engine handle the adhesion-caused jittering
+ 
+@@ -498,9 +498,9 @@
+                 }
+                 else
+                 {
+-                    if (t > (DieselEngines.MaxOutputPowerW / DieselEngines.MaxPowerW))
+-                        t = (DieselEngines.MaxOutputPowerW / DieselEngines.MaxPowerW);
+-                    MotiveForceN = TractiveForceCurves.Get(t, AbsWheelSpeedMpS);
++                    if (throttleNum > (DieselEngines.MaxOutputPowerW / DieselEngines.MaxPowerW))
++                        throttleNum = (DieselEngines.MaxOutputPowerW / DieselEngines.MaxPowerW);
++                    MotiveForceN = TractiveForceCurves.Get(throttleNum, AbsWheelSpeedMpS);
+                     if (MotiveForceN < 0)
+                         MotiveForceN = 0;
+                 }
+Index: Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/AirSinglePipe.cs
+===================================================================
+--- Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/AirSinglePipe.cs	(revision 3360)
++++ Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/AirSinglePipe.cs	(revision 3361)
+@@ -155,6 +155,12 @@
+             return CylPressurePSI;
+         }
+ 
++
++        public override float GetCylVolumeM3()
++        {
++            return CylVolumeM3;
++        }
++
+         public override float GetVacResPressurePSI()
+         {
+             return 0;
+@@ -239,13 +245,19 @@
+             HoldingValve = ValveState.Release;
+             HandbrakePercent = handbrakeOn & (Car as MSTSWagon).HandBrakePresent ? 100 : 0;
+             SetRetainer(RetainerSetting.Exhaust);
+-            if (Car is MSTSLocomotive)
+-                (Car as MSTSLocomotive).MainResPressurePSI = (Car as MSTSLocomotive).MaxMainResPressurePSI;
++            MSTSLocomotive loco = Car as MSTSLocomotive;
++            if (loco != null) 
++            {
++                loco.MainResPressurePSI = loco.MaxMainResPressurePSI;
++            }
+ 
+             if (EmergResVolumeM3 > 0 && EmergAuxVolumeRatio > 0 && BrakePipeVolumeM3 > 0)
+                 AuxBrakeLineVolumeRatio = EmergResVolumeM3 / EmergAuxVolumeRatio / BrakePipeVolumeM3;
+             else
+                 AuxBrakeLineVolumeRatio = 3.1f;
++
++            //FullCylAirConsumedM3 = MaxCylPressurePSI * MaxBrakeForceN * 0.00000059733491f; //an average volume (M3) of air used in brake cylinder for 1 N brake force.;
++            CylVolumeM3 = EmergResVolumeM3 / EmergAuxVolumeRatio / AuxCylVolumeRatio;
+         }
+ 
+         /// <summary>
+@@ -388,19 +400,8 @@
+                 AuxResPressurePSI += dp;
+                 BrakeLine2PressurePSI -= dp * AuxBrakeLineVolumeRatio;
+             }
+-            /*if (TripleValveState != prevTripleValueState)
+-            {
+-                switch (TripleValveState)
+-                {
+-                    case ValveState.Release: Car.SignalEvent(Event.TrainBrakePressureDecrease); break;
+-                    case ValveState.Apply:
+-                    case ValveState.Emergency: Car.SignalEvent(Event.TrainBrakePressureIncrease); break;
+-                    case ValveState.Lap: Car.SignalEvent(Event.TrainBrakeCylinderPressureStoppedChanging); break;
+-             * this method isn't enough, as can't detect when the trainbrake pressure stops changing after release, only after apply
+-                }
+-            }*/
+ 
+-            if (BrakeLine3PressurePSI >= 1000)
++            if (BrakeLine3PressurePSI >= 1000) // a really weird method: instead of getting the state of bailoff control here, the engine brake simulation signals the bailoff state with brakelinepressure3=1000
+             {
+                 BrakeLine3PressurePSI -= 1000;
+                 AutoCylPressurePSI -= MaxReleaseRatePSIpS * elapsedClockSeconds;
+@@ -416,7 +417,7 @@
+                 f = MaxHandbrakeForceN * HandbrakePercent / 100;
+             Car.BrakeForceN = f;
+ 
+-            // sound trigger checking runs every 4th update, to avoid the problems caused by the jumping BrakeLine1PressurePSI value, and also saves cpu time :)
++            // sound trigger checking runs every half second, to avoid the problems caused by the jumping BrakeLine1PressurePSI value, and also saves cpu time :)
+             if (SoundTriggerCounter >= 0.5f)
+             {
+                 SoundTriggerCounter = 0f;
+@@ -593,7 +594,7 @@
+                         if (p > 1000)
+                             p -= 1000;
+                         var prevState = lead.EngineBrakeState;
+-                        if (p < train.BrakeLine3PressurePSI)
++                        if (p < train.BrakeLine3PressurePSI && p < lead.MainResPressurePSI )
+                         {
+                             float dp = elapsedClockSeconds * lead.EngineBrakeApplyRatePSIpS / (last - first + 1);
+                             if (p + dp > train.BrakeLine3PressurePSI)
+@@ -600,6 +601,7 @@
+                                 dp = train.BrakeLine3PressurePSI - p;
+                             p += dp;
+                             lead.EngineBrakeState = ValveState.Apply;
++                            sumpv -= dp * brakeSystem.GetCylVolumeM3() / lead.MainResVolumeM3;
+                         }
+                         else if (p > train.BrakeLine3PressurePSI)
+                         {
+Index: Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs
+===================================================================
+--- Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs	(revision 3360)
++++ Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/MSTS/VacuumSinglePipe.cs	(revision 3361)
+@@ -144,6 +144,11 @@
+             return KPa.ToPSI(KPa.FromInHg(P2V(CylPressurePSIA)));
+         }
+ 
++        public override float GetCylVolumeM3()
++        {
++            return CylVol;
++        }
++
+         public override float GetVacResPressurePSI()
+         {
+             return VacResPressureAdjPSIA();
+@@ -194,6 +199,7 @@
+             CylPressurePSIA = BrakeLine1PressurePSI = V2P(fullServVacuumInHg);
+             VacResPressurePSIA = V2P(maxVacuumInHg);
+             HandbrakePercent = handbrakeOn & (Car as MSTSWagon).HandBrakePresent ? 100 : 0;
++            //CylVolumeM3 = MaxForcePressurePSI * MaxBrakeForceN * 0.00000059733491f; //an average volume (M3) of air used in brake cylinder for 1 N brake force.
+         }
+ 
+         public override void InitializeMoving() // used when initial speed > 0
+Index: Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/BrakeSystem.cs
+===================================================================
+--- Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/BrakeSystem.cs	(revision 3360)
++++ Source/RunActivity/Simulation/RollingStocks/SubSystems/Brakes/BrakeSystem.cs	(revision 3361)
+@@ -39,6 +39,8 @@
+         public float BrakeLine3PressurePSI;         // engine brake cylinder equalization pipe pressure
+         public float BrakePipeVolumeM3 = 1.4e-2f;      // volume of a single brake line
+ 
++        public float CylVolumeM3;
++
+         /// <summary>
+         /// Front brake hoses connection status
+         /// </summary>
+@@ -66,6 +68,7 @@
+         public abstract string GetFullStatus(BrakeSystem lastCarBrakeSystem, Dictionary<BrakeSystemComponent, PressureUnit> units);
+         public abstract string[] GetDebugStatus(Dictionary<BrakeSystemComponent, PressureUnit> units);
+         public abstract float GetCylPressurePSI();
++        public abstract float GetCylVolumeM3();
+         public abstract float GetVacResPressurePSI();
+ 
+         public abstract void Save(BinaryWriter outf);
